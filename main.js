@@ -1,10 +1,10 @@
-// main.js
-
 require("dotenv").config();
 
 const { Cluster } = require('puppeteer-cluster');
 const express = require("express");
 const fs = require("fs");
+const chromium = require('chrome-aws-lambda');
+const puppeteer = require('puppeteer-core');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -23,8 +23,9 @@ async function initializeCluster() {
     concurrency: Cluster.CONCURRENCY_CONTEXT,
     maxConcurrency: CONCURRENT_OPERATIONS,
     puppeteerOptions: {
-      args: ["--no-sandbox"],
-      headless: true,
+      args: [...chromium.args, "--no-sandbox"],
+      executablePath: await chromium.executablePath,
+      headless: chromium.headless,
       defaultViewport: null,
       timeout: NAVIGATION_TIMEOUT,
     },
@@ -139,6 +140,11 @@ app.post("/check-posts", async (req, res) => {
     console.error("Error in /check-posts:", error);
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// Endpoint de ping (puede ser útil para otras funcionalidades)
+app.get("/ping", (req, res) => {
+  res.send("pong");
 });
 
 // Iniciar el servidor
