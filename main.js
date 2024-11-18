@@ -1,6 +1,8 @@
+// main.js
+
 require("dotenv").config();
 
-const puppeteer = require("puppeteer");
+const { Cluster } = require('puppeteer-cluster');
 const express = require("express");
 const glitchup = require("glitchup");
 const fs = require("fs");
@@ -9,37 +11,50 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 const cookiesPath = "cookies.json";
-let browser;
-let page;
+const CONCURRENT_OPERATIONS = 5;
+const NAVIGATION_TIMEOUT = 30000; // 30 segundos
 
-async function initializeBrowser() {
-  if (!browser) {
-    browser = await puppeteer.launch({ args: ["--no-sandbox"] });
-    page = await browser.newPage();
+async function initializeCluster() {
+  const cluster = await Cluster.launch({
+    concurrency: Cluster.CONCURRENCY_CONTEXT,
+    maxConcurrency: CONCURRENT_OPERATIONS,
+    puppeteerOptions: {
+      args: ["--no-sandbox"],
+      headless: true,
+      defaultViewport: null,
+      timeout: NAVIGATION_TIMEOUT,
+    },
+  });
+
+  // Manejar errores en las tareas del clúster
+  await cluster.on('taskerror', (err, data) => {
+    console.error(`Error crawling ${data}: ${err.message}`);
+  });
+
+  // Realizar login una vez y compartir el contexto
+  await cluster.execute(async ({ page }) => {
     await loadCookies(page);
-  }
-}
+    await login(page, process.env.FORUM_URL, process.env.MOD_USERNAME, process.env.MOD_PASSWORD);
+  });
 
-async function login(page, forumUrl, username, password) {
-  // Verificar si el usuario ya está logueado
-  await page.goto(`${forumUrl}/`);
-  const loggedIn = (await page.$('div.copyright-body a[href^="/admin/?"]')) !== null;
+  // Definir la tarea del clúster con bloqueo de recursos no esenciales
+  await cluster.task(async ({ page, data: href }) => {
+    // Bloquear recursos no esenciales
+    await page.setRequestInterception(true);
+    page.on('request', request => {
+      const resourceType = request.resourceType();
+      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+        request.abort();
+      } else {
+        request.continue();
+      }
+    });
 
-  if (!loggedIn) {
-    console.log("User is not logged in. Logging in...");
-    await page.goto(`${forumUrl}/login`);
-    await page.waitForSelector('input[name="login"]');
-    await page.type('input[name="username"]', username);
-    await page.type('input[name="password"]', password);
-    await page.click('input[name="login"]');
-    await page.waitForNavigation();
+    const content = await readPostContent(page, href);
+    return { href, content };
+  });
 
-    // Guardar las cookies después de iniciar sesión
-    const cookies = await page.cookies();
-    fs.writeFileSync(cookiesPath, JSON.stringify(cookies));
-  } else {
-    console.log("User is already logged in.");
-  }
+  return cluster;
 }
 
 async function loadCookies(page) {
@@ -49,68 +64,100 @@ async function loadCookies(page) {
   }
 }
 
-async function readPostContent(page, href) {
-  try {
-    console.log(`Navigating to post: ${href}`);
-    await page.goto(href);
-    const content = await page.evaluate(() => {
-      const postBody = document.querySelector('.postbody');
-      return postBody ? postBody.innerText : 'No content found'; // Ajusta el selector según la estructura de tu foro
-    });
-    console.log(`Content of post ${href}: ${content}`);
-  } catch (error) {
-    console.error(`Error while reading post ${href}:`, error);
+async function login(page, forumUrl, username, password) {
+  await page.goto(`${forumUrl}/`, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT });
+  const loggedIn = await page.$('div.copyright-body a[href^="/admin/?"]');
+
+  if (!loggedIn) {
+    console.log("User is not logged in. Logging in...");
+    await page.goto(`${forumUrl}/login`, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT });
+    await page.waitForSelector('input[name="login"]', { timeout: NAVIGATION_TIMEOUT });
+    await page.type('input[name="username"]', username, { delay: 50 });
+    await page.type('input[name="password"]', password, { delay: 50 });
+    await Promise.all([
+      page.click('input[name="login"]'),
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT }),
+    ]);
+
+    const cookies = await page.cookies();
+    fs.writeFileSync(cookiesPath, JSON.stringify(cookies));
+  } else {
+    console.log("User is already logged in.");
   }
 }
 
-async function checkForNewPosts(page, forumUrl, username, password) {
+async function readPostContent(page, href) {
   try {
-    await login(page, forumUrl, username, password);
-    await page.goto(`${forumUrl}/f1-your-first-forum`);
-    
-    // Obtener todos los hrefs en un solo contexto de evaluación
-    const hrefs = await page.evaluate(() => {
-      const topics = document.querySelectorAll('.topictitle');
-      return Array.from(topics).map(topic => topic.href);
+    console.log(`Navigating to post: ${href}`);
+    await page.goto(href, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT });
+    const content = await page.evaluate(() => {
+      const postBody = document.querySelector('.postbody');
+      return postBody ? postBody.innerText.trim() : 'No content found';
+    });
+    console.log(`Content of post ${href}: ${content}`);
+    return content;
+  } catch (error) {
+    console.error(`Error while reading post ${href}:`, error);
+    return null;
+  }
+}
+
+async function checkForNewPosts(cluster, forumUrl) {
+  try {
+    const hrefs = await cluster.execute(async ({ page }) => {
+      await page.goto(`${forumUrl}/f1-your-first-forum`, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT });
+      const links = await page.evaluate(() => {
+        const topics = document.querySelectorAll('.topictitle');
+        return Array.from(topics).map(topic => topic.href);
+      });
+      return links;
     });
 
-    if (hrefs.length > 0) {
-      for (const href of hrefs) {
-        await readPostContent(page, href);
-      }
-    } else {
-      console.log("No new posts found.");
-    }
+    const results = await Promise.all(
+      hrefs.map(href => cluster.execute(href))
+    );
+
+    await cluster.idle();
+    return results;
   } catch (error) {
     console.error("Error while checking for new posts:", error);
+    return [];
   }
 }
 
 app.post("/check-posts", async (req, res) => {
-  await initializeBrowser();
-  await checkForNewPosts(
-    page,
-    process.env.FORUM_URL,
-    process.env.MOD_USERNAME,
-    process.env.MOD_PASSWORD
-  );
-  res.send("Checked for new posts");
+  try {
+    const cluster = await initializeCluster();
+    const results = await checkForNewPosts(cluster, process.env.FORUM_URL);
+    await cluster.close();
+    res.json({ success: true, posts: results });
+  } catch (error) {
+    console.error("Error in /check-posts:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
-// Configurar glitchup para mantener la aplicación activa
-glitchup("/ping");
-
-// Configurar el servidor Express para el endpoint de ping
 app.get("/ping", (req, res) => {
   res.send("pong");
 });
+
+glitchup("/ping");
 
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
 
-// Verificar la sesión cada 55 minutos para evitar la desconexión automática
+// Verificar la sesión periódicamente
 setInterval(async () => {
-  await initializeBrowser();
-  await login(page, process.env.FORUM_URL, process.env.MOD_USERNAME, process.env.MOD_PASSWORD);
-}, 55 * 60 * 1000); // 55 minutos en milisegundos
+  try {
+    const cluster = await initializeCluster();
+    await cluster.idle();
+    await cluster.close();
+  } catch (error) {
+    console.error("Error during session refresh:", error);
+  }
+}, 55 * 60 * 1000); // Cada 55 minutos
+
+process.on('SIGINT', async () => {
+  process.exit();
+});

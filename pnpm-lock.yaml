@@ -20,6 +20,9 @@ importers:
       puppeteer:
         specifier: ^23.8.0
         version: 23.8.0
+      puppeteer-cluster:
+        specifier: ^0.24.0
+        version: 0.24.0(puppeteer@23.8.0)
 
 packages:
 
@@ -514,6 +517,11 @@ packages:
 
   pump@3.0.2:
     resolution: {integrity: sha512-tUPXtzlGM8FE3P0ZL6DVs/3P58k9nk8/jZeQCurTJylQA8qFYzHFfhBJkuqyE0FifOsQ0uKWekiZ5g8wtr28cw==}
+
+  puppeteer-cluster@0.24.0:
+    resolution: {integrity: sha512-zHPoNsrwkFLKFtgJJv2aC13EbMASQsE048uZd7CyikEXcl+sc1Nf6PMFb9kMoZI7/zMYxvuP658o2mw079ZZyQ==}
+    peerDependencies:
+      puppeteer: '>=22.0.0'
 
   puppeteer-core@23.8.0:
     resolution: {integrity: sha512-c2ymGN2M//We7pC+JhP2dE/g4+qnT89BO+EMSZyJmecN3DN6RNqErA7eH7DrWoNIcU75r2nP4VHa4pswAL6NVg==}
@@ -1233,6 +1241,13 @@ snapshots:
     dependencies:
       end-of-stream: 1.4.4
       once: 1.4.0
+
+  puppeteer-cluster@0.24.0(puppeteer@23.8.0):
+    dependencies:
+      debug: 4.3.7
+      puppeteer: 23.8.0
+    transitivePeerDependencies:
+      - supports-color
 
   puppeteer-core@23.8.0:
     dependencies:
