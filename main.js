@@ -4,7 +4,6 @@ require("dotenv").config();
 
 const { Cluster } = require('puppeteer-cluster');
 const express = require("express");
-const glitchup = require("glitchup");
 const fs = require("fs");
 
 const app = express();
@@ -14,8 +13,13 @@ const cookiesPath = "cookies.json";
 const CONCURRENT_OPERATIONS = 5;
 const NAVIGATION_TIMEOUT = 30000; // 30 segundos
 
+let clusterInstance = null;
+
+// Inicializar el clúster
 async function initializeCluster() {
-  const cluster = await Cluster.launch({
+  if (clusterInstance) return clusterInstance;
+
+  clusterInstance = await Cluster.launch({
     concurrency: Cluster.CONCURRENCY_CONTEXT,
     maxConcurrency: CONCURRENT_OPERATIONS,
     puppeteerOptions: {
@@ -27,18 +31,18 @@ async function initializeCluster() {
   });
 
   // Manejar errores en las tareas del clúster
-  await cluster.on('taskerror', (err, data) => {
+  clusterInstance.on('taskerror', (err, data) => {
     console.error(`Error crawling ${data}: ${err.message}`);
   });
 
   // Realizar login una vez y compartir el contexto
-  await cluster.execute(async ({ page }) => {
+  await clusterInstance.execute(async ({ page }) => {
     await loadCookies(page);
     await login(page, process.env.FORUM_URL, process.env.MOD_USERNAME, process.env.MOD_PASSWORD);
   });
 
   // Definir la tarea del clúster con bloqueo de recursos no esenciales
-  await cluster.task(async ({ page, data: href }) => {
+  clusterInstance.task(async ({ page, data: href }) => {
     // Bloquear recursos no esenciales
     await page.setRequestInterception(true);
     page.on('request', request => {
@@ -54,7 +58,7 @@ async function initializeCluster() {
     return { href, content };
   });
 
-  return cluster;
+  return clusterInstance;
 }
 
 async function loadCookies(page) {
@@ -125,11 +129,11 @@ async function checkForNewPosts(cluster, forumUrl) {
   }
 }
 
+// Endpoint para verificar posts
 app.post("/check-posts", async (req, res) => {
   try {
     const cluster = await initializeCluster();
     const results = await checkForNewPosts(cluster, process.env.FORUM_URL);
-    await cluster.close();
     res.json({ success: true, posts: results });
   } catch (error) {
     console.error("Error in /check-posts:", error);
@@ -137,12 +141,7 @@ app.post("/check-posts", async (req, res) => {
   }
 });
 
-app.get("/ping", (req, res) => {
-  res.send("pong");
-});
-
-glitchup("/ping");
-
+// Iniciar el servidor
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
@@ -152,12 +151,17 @@ setInterval(async () => {
   try {
     const cluster = await initializeCluster();
     await cluster.idle();
-    await cluster.close();
+    // Opcional: puedes realizar alguna acción adicional aquí si es necesario
   } catch (error) {
     console.error("Error during session refresh:", error);
   }
 }, 55 * 60 * 1000); // Cada 55 minutos
 
+// Manejar señal de interrupción para cerrar el clúster correctamente
 process.on('SIGINT', async () => {
+  console.log("Cerrando clúster...");
+  if (clusterInstance) {
+    await clusterInstance.close();
+  }
   process.exit();
 });
