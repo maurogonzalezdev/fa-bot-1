@@ -2,8 +2,8 @@
   "name": "puppeteer-js",
   "version": "1.0.0",
   "description": "",
-  "engine": {
-    "node": "22.x"
+  "engines": {
+    "node": "18.x"
   },
   "main": "main.js",
   "scripts": {

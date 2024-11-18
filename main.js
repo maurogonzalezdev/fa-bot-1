@@ -7,9 +7,10 @@ const chromium = require('chrome-aws-lambda');
 const puppeteer = require('puppeteer-core');
 
 const app = express();
+app.use(compression());
 const port = process.env.PORT || 3000;
 
-const cookiesPath = "cookies.json";
+const cookiesPath = "/tmp/cookies.json"; // Usar /tmp para almacenamiento temporal en Vercel
 const CONCURRENT_OPERATIONS = 5;
 const NAVIGATION_TIMEOUT = 30000; // 30 segundos
 
@@ -30,6 +31,9 @@ async function initializeCluster() {
       timeout: NAVIGATION_TIMEOUT,
     },
   });
+
+  // Verificar la ruta del ejecutable de Chromium
+  console.log(`Ruta ejecutable de Chromium: ${await chromium.executablePath}`);
 
   // Manejar errores en las tareas del clúster
   clusterInstance.on('taskerror', (err, data) => {
@@ -74,7 +78,7 @@ async function login(page, forumUrl, username, password) {
   const loggedIn = await page.$('div.copyright-body a[href^="/admin/?"]');
 
   if (!loggedIn) {
-    console.log("User is not logged in. Logging in...");
+    console.log("Usuario no está logueado. Iniciando sesión...");
     await page.goto(`${forumUrl}/login`, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT });
     await page.waitForSelector('input[name="login"]', { timeout: NAVIGATION_TIMEOUT });
     await page.type('input[name="username"]', username, { delay: 50 });
@@ -87,22 +91,22 @@ async function login(page, forumUrl, username, password) {
     const cookies = await page.cookies();
     fs.writeFileSync(cookiesPath, JSON.stringify(cookies));
   } else {
-    console.log("User is already logged in.");
+    console.log("Usuario ya está logueado.");
   }
 }
 
 async function readPostContent(page, href) {
   try {
-    console.log(`Navigating to post: ${href}`);
+    console.log(`Navegando a post: ${href}`);
     await page.goto(href, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT });
     const content = await page.evaluate(() => {
       const postBody = document.querySelector('.postbody');
-      return postBody ? postBody.innerText.trim() : 'No content found';
+      return postBody ? postBody.innerText.trim() : 'No se encontró contenido';
     });
-    console.log(`Content of post ${href}: ${content}`);
+    console.log(`Contenido del post ${href}: ${content}`);
     return content;
   } catch (error) {
-    console.error(`Error while reading post ${href}:`, error);
+    console.error(`Error al leer el post ${href}:`, error);
     return null;
   }
 }
@@ -125,7 +129,7 @@ async function checkForNewPosts(cluster, forumUrl) {
     await cluster.idle();
     return results;
   } catch (error) {
-    console.error("Error while checking for new posts:", error);
+    console.error("Error al verificar nuevos posts:", error);
     return [];
   }
 }
@@ -137,7 +141,7 @@ app.post("/check-posts", async (req, res) => {
     const results = await checkForNewPosts(cluster, process.env.FORUM_URL);
     res.json({ success: true, posts: results });
   } catch (error) {
-    console.error("Error in /check-posts:", error);
+    console.error("Error en /check-posts:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -149,7 +153,7 @@ app.get("/ping", (req, res) => {
 
 // Iniciar el servidor
 app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+  console.log(`Servidor corriendo en http://localhost:${port}`);
 });
 
 // Verificar la sesión periódicamente
@@ -159,7 +163,7 @@ setInterval(async () => {
     await cluster.idle();
     // Opcional: puedes realizar alguna acción adicional aquí si es necesario
   } catch (error) {
-    console.error("Error during session refresh:", error);
+    console.error("Error durante la actualización de sesión:", error);
   }
 }, 55 * 60 * 1000); // Cada 55 minutos
 
